@@ -272,10 +272,33 @@ body {
   transform: translateY(-2px);
 }
 
+.product-card:focus-visible {
+  outline: 2px solid var(--loreal-red);
+  outline-offset: 2px;
+}
+
 .product-card.selected {
   border-color: var(--loreal-red);
   background: var(--loreal-gold-tint);
   box-shadow: 0 0 0 1px var(--loreal-red);
+}
+
+.product-card .selected-status {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #b8002b;
+}
+
+.product-card .selected-status i {
+  color: var(--loreal-red);
+}
+
+.product-card.selected .selected-status {
+  display: inline-flex;
 }
 
 .product-card img {
@@ -328,7 +351,71 @@ body {
 #selectedProductsList {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
+}
+
+.selected-empty {
+  color: #d6cfc2;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.selected-product-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  background: #1c1c1c;
+  border: 1.5px solid var(--loreal-gold);
+  border-radius: 6px;
+  max-width: 100%;
+}
+
+.selected-product-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.selected-product-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--loreal-white);
+}
+
+.selected-product-brand {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--loreal-gold);
+}
+
+.remove-product-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  background: transparent;
+  color: #f3ede2;
+  border: 1px solid rgba(227, 165, 53, 0.45);
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.remove-product-btn:hover {
+  background: var(--loreal-red);
+  border-color: var(--loreal-red);
+  color: var(--loreal-white);
+}
+
+.remove-product-btn:focus-visible {
+  outline: 2px solid var(--loreal-gold);
+  outline-offset: 2px;
 }
 
 .generate-btn {
