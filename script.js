@@ -5,9 +5,20 @@ const selectedProductsList = document.getElementById("selectedProductsList");
 const chatForm = document.getElementById("chatForm");
 const chatWindow = document.getElementById("chatWindow");
 
-/* Keep track of all loaded products and currently selected products */
+/* Modal DOM elements */
+const productModal = document.getElementById("productModal");
+const closeModalBtn = document.getElementById("closeModalBtn");
+const modalProductImage = document.getElementById("modalProductImage");
+const modalProductMeta = document.getElementById("modalProductMeta");
+const modalProductName = document.getElementById("modalProductName");
+const modalProductDescription = document.getElementById("modalProductDescription");
+const modalSelectBtn = document.getElementById("modalSelectBtn");
+
+/* Keep track of loaded products, selected products, and active modal state */
 let allProducts = [];
 let selectedProducts = [];
+let activeModalProductId = null;
+let lastFocusedElement = null;
 
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
@@ -36,7 +47,7 @@ function isProductSelected(productId) {
   return selectedProducts.some((item) => item.id === productId);
 }
 
-/* Add or remove a product when the user clicks its card */
+/* Add or remove a product when the user clicks its card or modal CTA */
 function toggleProductSelection(productId) {
   const alreadySelected = isProductSelected(productId);
 
@@ -51,9 +62,13 @@ function toggleProductSelection(productId) {
     }
   }
 
-  /* Update the card highlight in the grid and refresh the Selected Products list */
+  /* Update the card highlight, Selected Products list, and modal button if open */
   updateProductCardStates();
   renderSelectedProducts();
+
+  if (activeModalProductId === productId) {
+    updateModalSelectButton(productId);
+  }
 }
 
 /* Sync the visual selected state on every visible product card */
@@ -63,9 +78,12 @@ function updateProductCardStates() {
   cards.forEach((card) => {
     const productId = Number(card.dataset.id);
     const selected = isProductSelected(productId);
+    const selectTrigger = card.querySelector(".product-card-select");
 
     card.classList.toggle("selected", selected);
-    card.setAttribute("aria-pressed", String(selected));
+    if (selectTrigger) {
+      selectTrigger.setAttribute("aria-pressed", String(selected));
+    }
   });
 }
 
@@ -103,6 +121,51 @@ function renderSelectedProducts() {
     .join("");
 }
 
+/* Update the modal's Add / Remove button text and style */
+function updateModalSelectButton(productId) {
+  const selected = isProductSelected(productId);
+  modalSelectBtn.textContent = selected
+    ? "Remove from Routine"
+    : "Add to Routine";
+  modalSelectBtn.classList.toggle("is-selected", selected);
+}
+
+/* Open the Product Details modal for the chosen product */
+function openProductModal(productId) {
+  const product = allProducts.find((item) => item.id === productId);
+  if (!product) return;
+
+  activeModalProductId = productId;
+  lastFocusedElement = document.activeElement;
+
+  /* Populate modal fields with product details */
+  modalProductImage.src = product.image;
+  modalProductImage.alt = product.name;
+  modalProductMeta.textContent = `${product.brand} · ${product.category}`;
+  modalProductName.textContent = product.name;
+  modalProductDescription.textContent = product.description;
+
+  updateModalSelectButton(productId);
+
+  /* Reveal modal and move keyboard focus to the close button */
+  productModal.hidden = false;
+  document.body.classList.add("modal-open");
+  closeModalBtn.focus();
+}
+
+/* Close the Product Details modal and restore focus to the trigger button */
+function closeProductModal() {
+  if (productModal.hidden) return;
+
+  productModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  activeModalProductId = null;
+
+  if (lastFocusedElement && typeof lastFocusedElement.focus === "function") {
+    lastFocusedElement.focus();
+  }
+}
+
 /* Create HTML for displaying product cards */
 function displayProducts(products) {
   productsContainer.innerHTML = products
@@ -110,29 +173,55 @@ function displayProducts(products) {
       const selected = isProductSelected(product.id);
 
       return `
-        <div
+        <article
           class="product-card ${selected ? "selected" : ""}"
           data-id="${product.id}"
-          role="button"
-          tabindex="0"
-          aria-pressed="${selected}"
         >
-          <img src="${product.image}" alt="${product.name}">
-          <div class="product-info">
-            <h3>${product.name}</h3>
-            <p>${product.brand}</p>
+          <div
+            class="product-card-select"
+            role="button"
+            tabindex="0"
+            aria-pressed="${selected}"
+            aria-label="${product.name} by ${product.brand}. Click to ${
+              selected ? "unselect" : "select"
+            }."
+          >
+            <img src="${product.image}" alt="${product.name}">
+            <div class="product-info">
+              <h3>${product.name}</h3>
+              <p>${product.brand}</p>
+            </div>
+          </div>
+
+          <div class="product-card-footer">
+            <button
+              type="button"
+              class="details-btn"
+              data-id="${product.id}"
+              aria-label="View details for ${product.name}"
+            >
+              <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+              View Details
+            </button>
             <span class="selected-status">
               <i class="fa-solid fa-check" aria-hidden="true"></i> Selected
             </span>
           </div>
-        </div>
+        </article>
       `;
     })
     .join("");
 }
 
-/* Handle clicks on product cards to select or unselect them */
+/* Handle clicks inside the product grid (Details button vs card selection) */
 productsContainer.addEventListener("click", (e) => {
+  const detailsBtn = e.target.closest(".details-btn");
+  if (detailsBtn) {
+    const productId = Number(detailsBtn.dataset.id);
+    openProductModal(productId);
+    return;
+  }
+
   const card = e.target.closest(".product-card");
   if (!card) return;
 
@@ -140,14 +229,17 @@ productsContainer.addEventListener("click", (e) => {
   toggleProductSelection(productId);
 });
 
-/* Allow keyboard users to select or unselect product cards with Enter or Space */
+/* Allow keyboard users to toggle selection on a focused product card */
 productsContainer.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " ") return;
 
-  const card = e.target.closest(".product-card");
-  if (!card) return;
+  const selectArea = e.target.closest(".product-card-select");
+  if (!selectArea) return;
 
   e.preventDefault();
+  const card = selectArea.closest(".product-card");
+  if (!card) return;
+
   const productId = Number(card.dataset.id);
   toggleProductSelection(productId);
 });
@@ -160,9 +252,51 @@ selectedProductsList.addEventListener("click", (e) => {
   const productId = Number(removeBtn.dataset.id);
   selectedProducts = selectedProducts.filter((item) => item.id !== productId);
 
-  /* Refresh both the Selected Products list and the visible product grid */
+  /* Refresh the Selected Products list, product grid, and modal CTA if open */
   renderSelectedProducts();
   updateProductCardStates();
+  if (activeModalProductId === productId) {
+    updateModalSelectButton(productId);
+  }
+});
+
+/* Modal button and backdrop click handlers */
+closeModalBtn.addEventListener("click", closeProductModal);
+
+modalSelectBtn.addEventListener("click", () => {
+  if (activeModalProductId !== null) {
+    toggleProductSelection(activeModalProductId);
+  }
+});
+
+productModal.addEventListener("click", (e) => {
+  if (e.target === productModal) {
+    closeProductModal();
+  }
+});
+
+/* Close modal on Escape and trap Tab focus inside the open dialog */
+document.addEventListener("keydown", (e) => {
+  if (productModal.hidden) return;
+
+  if (e.key === "Escape") {
+    closeProductModal();
+    return;
+  }
+
+  if (e.key === "Tab") {
+    const focusableElements = [closeModalBtn, modalSelectBtn];
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+
+    if (e.shiftKey && document.activeElement === firstElement) {
+      e.preventDefault();
+      lastElement.focus();
+    } else if (!e.shiftKey && document.activeElement === lastElement) {
+      e.preventDefault();
+      firstElement.focus();
+    }
+  }
 });
 
 /* Filter and display products when category changes */
