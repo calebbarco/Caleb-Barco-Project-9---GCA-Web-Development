@@ -33,7 +33,7 @@ const conversationMessages = [
   {
     role: "system",
     content:
-      "You are a helpful L'Oréal skincare, haircare, makeup, and beauty advisor. Use the JSON product details provided by the user to build a clear, personalized, step-by-step routine (explaining the order and purpose of each product) and answer any follow-up questions accurately.",
+      "You are a helpful L'Oréal skincare, haircare, makeup, and beauty advisor with real-time web search access. Use the JSON product details provided by the user along with current web information on L'Oréal products, ingredients, and routines to build clear, personalized, step-by-step routines and answer follow-up questions accurately with helpful links or citations.",
   },
 ];
 
@@ -401,19 +401,120 @@ categoryFilter.addEventListener("change", async (e) => {
   displayProducts(filteredProducts);
 });
 
-/* Safely append text with **bold** inline segments using textContent (no raw HTML) */
-function appendFormattedInlineText(parent, text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-
-  parts.forEach((part) => {
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
-      const strong = document.createElement("strong");
-      strong.textContent = part.slice(2, -2);
-      parent.appendChild(strong);
-    } else if (part) {
-      parent.appendChild(document.createTextNode(part));
+/* Validate that a URL uses http: or https: before turning it into a link */
+function getSafeHttpUrl(rawUrl) {
+  if (typeof rawUrl !== "string") return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
     }
-  });
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/* Safely append text with **bold** segments and clickable [label](url) or bare URLs */
+function appendFormattedInlineText(parent, text) {
+  const tokenPattern = /(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s)<>]+)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parent.appendChild(
+        document.createTextNode(text.slice(lastIndex, match.index))
+      );
+    }
+
+    const token = match[0];
+
+    if (token.startsWith("**") && token.endsWith("**") && token.length > 4) {
+      const strong = document.createElement("strong");
+      strong.textContent = token.slice(2, -2);
+      parent.appendChild(strong);
+    } else if (token.startsWith("[")) {
+      const linkMatch = token.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+      const safeUrl = linkMatch ? getSafeHttpUrl(linkMatch[2]) : null;
+      if (linkMatch && safeUrl) {
+        const anchor = document.createElement("a");
+        anchor.href = safeUrl;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.className = "chat-inline-link";
+        anchor.textContent = linkMatch[1];
+        parent.appendChild(anchor);
+      } else {
+        parent.appendChild(document.createTextNode(token));
+      }
+    } else {
+      const cleanedUrl = token.replace(/[.,;:!?]+$/, "");
+      const trailingPunctuation = token.slice(cleanedUrl.length);
+      const safeUrl = getSafeHttpUrl(cleanedUrl);
+
+      if (safeUrl) {
+        const anchor = document.createElement("a");
+        anchor.href = safeUrl;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.className = "chat-inline-link";
+        anchor.textContent = cleanedUrl;
+        parent.appendChild(anchor);
+        if (trailingPunctuation) {
+          parent.appendChild(document.createTextNode(trailingPunctuation));
+        }
+      } else {
+        parent.appendChild(document.createTextNode(token));
+      }
+    }
+
+    lastIndex = tokenPattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
+/* Collect deduplicated citations from API annotations/citations or inline markdown links */
+function collectMessageCitations(messageObj, replyText) {
+  const seenUrls = new Set();
+  const collected = [];
+
+  function addCitation(rawUrl, rawTitle) {
+    const safeUrl = getSafeHttpUrl(rawUrl);
+    if (!safeUrl || seenUrls.has(safeUrl)) return;
+    seenUrls.add(safeUrl);
+
+    const title =
+      typeof rawTitle === "string" && rawTitle.trim()
+        ? rawTitle.trim()
+        : new URL(safeUrl).hostname;
+
+    collected.push({ title, url: safeUrl });
+  }
+
+  if (Array.isArray(messageObj?.citations)) {
+    messageObj.citations.forEach((item) => addCitation(item?.url, item?.title));
+  }
+
+  if (Array.isArray(messageObj?.annotations)) {
+    messageObj.annotations.forEach((ann) => {
+      if (ann?.type === "url_citation") {
+        const source = ann.url_citation || ann;
+        addCitation(source?.url, source?.title);
+      }
+    });
+  }
+
+  const mdLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let match;
+  while ((match = mdLinkPattern.exec(replyText)) !== null) {
+    addCitation(match[2], match[1]);
+  }
+
+  return collected;
 }
 
 /* Render plain or markdown-like text safely into a chat message element */
@@ -469,8 +570,8 @@ function renderMessageContent(container, text) {
   });
 }
 
-/* Add a styled chat bubble to the chat window */
-function appendChatMessage(sender, text, variant = "") {
+/* Add a styled chat bubble (and optional web search citations) to the chat window */
+function appendChatMessage(sender, text, variant = "", citations = []) {
   const bubble = document.createElement("div");
   bubble.className = `chat-message ${sender} ${variant}`.trim();
 
@@ -484,6 +585,38 @@ function appendChatMessage(sender, text, variant = "") {
   renderMessageContent(body, text);
   bubble.appendChild(body);
 
+  if (Array.isArray(citations) && citations.length > 0) {
+    const sourcesBox = document.createElement("div");
+    sourcesBox.className = "chat-citations";
+
+    const sourcesHeading = document.createElement("span");
+    sourcesHeading.className = "chat-citations-title";
+    sourcesHeading.textContent = "Sources";
+    sourcesBox.appendChild(sourcesHeading);
+
+    const sourcesList = document.createElement("ol");
+    sourcesList.className = "chat-citations-list";
+
+    citations.forEach((citation) => {
+      const safeUrl = getSafeHttpUrl(citation.url);
+      if (!safeUrl) return;
+
+      const li = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = safeUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = citation.title || safeUrl;
+      li.appendChild(link);
+      sourcesList.appendChild(li);
+    });
+
+    if (sourcesList.childElementCount > 0) {
+      sourcesBox.appendChild(sourcesList);
+      bubble.appendChild(sourcesBox);
+    }
+  }
+
   chatWindow.appendChild(bubble);
   chatWindow.scrollTop = chatWindow.scrollHeight;
   return bubble;
@@ -496,7 +629,7 @@ function setLoadingState(loading) {
   sendBtn.disabled = loading;
 }
 
-/* Send the conversation history to our backend OpenAI endpoint and display the reply */
+/* Send the conversation history to our backend OpenAI web-search endpoint */
 async function requestRoutineReply(displayText, apiUserContent, loadingText) {
   if (isSending) return;
 
@@ -514,7 +647,7 @@ async function requestRoutineReply(displayText, apiUserContent, loadingText) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4.1",
+        model: "gpt-4o-search-preview",
         messages: nextMessages,
       }),
     });
@@ -527,17 +660,20 @@ async function requestRoutineReply(displayText, apiUserContent, loadingText) {
       );
     }
 
-    const reply = data?.choices?.[0]?.message?.content;
+    const messageObj = data?.choices?.[0]?.message;
+    const reply = messageObj?.content;
     if (!reply) {
       throw new Error("No routine response was returned.");
     }
+
+    const citations = collectMessageCitations(messageObj, reply);
 
     /* Save both the user message and AI reply so follow-up questions keep context */
     conversationMessages.push({ role: "user", content: apiUserContent });
     conversationMessages.push({ role: "assistant", content: reply });
 
     loadingBubble.remove();
-    appendChatMessage("assistant", reply);
+    appendChatMessage("assistant", reply, "", citations);
   } catch (error) {
     loadingBubble.remove();
     appendChatMessage("assistant", error.message, "is-error");

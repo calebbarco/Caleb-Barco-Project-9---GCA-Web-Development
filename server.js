@@ -10,7 +10,13 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = "0.0.0.0";
 
 const ALLOWED_ROLES = new Set(["system", "user", "assistant"]);
-const ALLOWED_MODELS = new Set(["gpt-4.1", "gpt-4o-mini", "gpt-4o"]);
+const ALLOWED_MODELS = new Set([
+  "gpt-4o-search-preview",
+  "gpt-4o-mini-search-preview",
+  "gpt-4.1",
+  "gpt-4o-mini",
+  "gpt-4o",
+]);
 
 app.use(express.json({ limit: "100kb" }));
 
@@ -64,6 +70,61 @@ function validateMessages(rawMessages) {
   return { messages: sanitized };
 }
 
+/* Validate and normalize URL citations returned by OpenAI web search */
+function sanitizeHttpUrl(rawUrl) {
+  if (typeof rawUrl !== "string") return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function extractCitations(messageObj) {
+  const rawAnnotations = Array.isArray(messageObj?.annotations)
+    ? messageObj.annotations
+    : [];
+  const seenUrls = new Set();
+  const citations = [];
+  const annotations = [];
+
+  for (const ann of rawAnnotations) {
+    if (!ann || ann.type !== "url_citation") continue;
+
+    const source = ann.url_citation || ann;
+    const safeUrl = sanitizeHttpUrl(source?.url);
+    if (!safeUrl) continue;
+
+    const title =
+      typeof source?.title === "string" && source.title.trim()
+        ? source.title.trim()
+        : new URL(safeUrl).hostname;
+
+    annotations.push({
+      type: "url_citation",
+      url_citation: {
+        url: safeUrl,
+        title,
+        start_index:
+          typeof source.start_index === "number" ? source.start_index : undefined,
+        end_index:
+          typeof source.end_index === "number" ? source.end_index : undefined,
+      },
+    });
+
+    if (!seenUrls.has(safeUrl)) {
+      seenUrls.add(safeUrl);
+      citations.push({ title, url: safeUrl });
+    }
+  }
+
+  return { annotations, citations };
+}
+
 /* Proxy routine generation and advisor chat requests to OpenAI API or Worker */
 app.post("/api/chat", async (req, res) => {
   const validation = validateMessages(req.body?.messages);
@@ -74,7 +135,7 @@ app.post("/api/chat", async (req, res) => {
   const requestedModel =
     typeof req.body?.model === "string" && ALLOWED_MODELS.has(req.body.model)
       ? req.body.model
-      : "gpt-4.1";
+      : "gpt-4o-search-preview";
 
   const workerUrl = process.env.OPENAI_WORKER_URL?.trim();
   const openAiKey = process.env.OPENAI_API_KEY?.trim();
@@ -104,13 +165,21 @@ app.post("/api/chat", async (req, res) => {
       headers.Authorization = `Bearer ${openAiKey}`;
     }
 
+    const requestPayload = {
+      model: requestedModel,
+      messages: validation.messages,
+    };
+
+    if (requestedModel.includes("search-preview")) {
+      requestPayload.web_search_options = {
+        search_context_size: "medium",
+      };
+    }
+
     const upstreamResponse = await fetch(targetUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: requestedModel,
-        messages: validation.messages,
-      }),
+      body: JSON.stringify(requestPayload),
     });
 
     const data = await upstreamResponse.json().catch(() => null);
@@ -122,12 +191,15 @@ app.post("/api/chat", async (req, res) => {
       return res.status(upstreamResponse.status).json({ error: upstreamMsg });
     }
 
-    const reply = data?.choices?.[0]?.message?.content;
+    const messageObj = data?.choices?.[0]?.message;
+    const reply = messageObj?.content;
     if (typeof reply !== "string" || !reply.trim()) {
       return res.status(502).json({
         error: "Received an unexpected response format from OpenAI.",
       });
     }
+
+    const { annotations, citations } = extractCitations(messageObj);
 
     return res.json({
       choices: [
@@ -135,6 +207,8 @@ app.post("/api/chat", async (req, res) => {
           message: {
             role: "assistant",
             content: reply,
+            annotations,
+            citations,
           },
         },
       ],
