@@ -125,6 +125,18 @@ function extractCitations(messageObj) {
   return { annotations, citations };
 }
 
+/* Allow cross-origin requests to /api/chat when static hosts point to this backend */
+app.use("/api/chat", (_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+
+app.options("/api/chat", (_req, res) => {
+  res.sendStatus(204);
+});
+
 /* Proxy routine generation and advisor chat requests to OpenAI API or Worker */
 app.post("/api/chat", async (req, res) => {
   const validation = validateMessages(req.body?.messages);

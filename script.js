@@ -25,6 +25,14 @@ const modalSelectBtn = document.getElementById("modalSelectBtn");
 const STORAGE_KEY = "lorealSelectedProducts";
 const DIR_STORAGE_KEY = "lorealTextDirection";
 
+/*
+ * Cloudflare Worker URL for static deployments (such as GitHub Pages).
+ * GitHub Pages only serves static files and returns HTTP 405 on POST /api/chat.
+ * Paste your class Cloudflare Worker URL here (e.g. "https://loreal-routine.your-subdomain.workers.dev/")
+ * or set <meta name="openai-worker-url" content="..." /> in index.html.
+ */
+const CLOUDFLARE_WORKER_URL = "https://loreal-worker.cbarco21.workers.dev/";
+
 /* Known RTL ISO 639 language codes and RTL script subtags */
 const RTL_LANG_CODES = new Set([
   "ar", "arc", "azb", "bcc", "bgn", "bqi", "ckb", "dv", "fa",
@@ -889,11 +897,48 @@ function setLoadingState(loading) {
   sendBtn.disabled = loading;
 }
 
-/* Send the conversation history to our backend OpenAI web-search endpoint */
+/* Determine which endpoint should receive chat/routine requests */
+function getChatEndpoint() {
+  if (CLOUDFLARE_WORKER_URL.trim()) {
+    return CLOUDFLARE_WORKER_URL.trim();
+  }
+
+  const metaWorkerUrl = document
+    .querySelector('meta[name="openai-worker-url"]')
+    ?.getAttribute("content")
+    ?.trim();
+  if (metaWorkerUrl) {
+    return metaWorkerUrl;
+  }
+
+  return "/api/chat";
+}
+
+/* Check if the app is running on static hosting that cannot handle POST /api/chat */
+function isStaticHostingEnvironment() {
+  const { hostname, protocol } = window.location;
+  return protocol === "file:" || hostname.endsWith(".github.io");
+}
+
+/* Build a clear setup message when a static host (like GitHub Pages) has no backend */
+function getStaticHostSetupMessage() {
+  return 'GitHub Pages hosts static files only and cannot run the local "/api/chat" server (which causes HTTP 405). To enable the AI chatbot on GitHub Pages, set CLOUDFLARE_WORKER_URL in script.js (or <meta name="openai-worker-url"> in index.html) to your HTTPS Cloudflare Worker URL.';
+}
+
+/* Send the conversation history to our backend or Cloudflare Worker endpoint */
 async function requestRoutineReply(displayText, apiUserContent, loadingText) {
   if (isSending) return;
 
+  const endpoint = getChatEndpoint();
+
   appendChatMessage("user", displayText);
+
+  /* Avoid sending a doomed POST /api/chat on GitHub Pages if no Worker URL is set */
+  if (endpoint === "/api/chat" && isStaticHostingEnvironment()) {
+    appendChatMessage("assistant", getStaticHostSetupMessage(), "is-notice");
+    return;
+  }
+
   const loadingBubble = appendChatMessage("assistant", loadingText, "is-loading");
   setLoadingState(true);
 
@@ -903,7 +948,7 @@ async function requestRoutineReply(displayText, apiUserContent, loadingText) {
   ];
 
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -912,12 +957,19 @@ async function requestRoutineReply(displayText, apiUserContent, loadingText) {
       }),
     });
 
+    if (response.status === 405 && endpoint === "/api/chat") {
+      throw new Error(getStaticHostSetupMessage());
+    }
+
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(
-        data.error || `Request failed with status ${response.status}.`
-      );
+      const errorMessage =
+        typeof data?.error === "string"
+          ? data.error
+          : data?.error?.message ||
+            `Request failed with status ${response.status}.`;
+      throw new Error(errorMessage);
     }
 
     const messageObj = data?.choices?.[0]?.message;
