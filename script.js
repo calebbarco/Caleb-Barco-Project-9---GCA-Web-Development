@@ -2,8 +2,12 @@
 const categoryFilter = document.getElementById("categoryFilter");
 const productsContainer = document.getElementById("productsContainer");
 const selectedProductsList = document.getElementById("selectedProductsList");
+const clearSelectedBtn = document.getElementById("clearSelectedBtn");
+const generateRoutineBtn = document.getElementById("generateRoutine");
 const chatForm = document.getElementById("chatForm");
 const chatWindow = document.getElementById("chatWindow");
+const userInput = document.getElementById("userInput");
+const sendBtn = document.getElementById("sendBtn");
 
 /* Modal DOM elements */
 const productModal = document.getElementById("productModal");
@@ -14,11 +18,24 @@ const modalProductName = document.getElementById("modalProductName");
 const modalProductDescription = document.getElementById("modalProductDescription");
 const modalSelectBtn = document.getElementById("modalSelectBtn");
 
+/* Key used to save selected products in localStorage */
+const STORAGE_KEY = "lorealSelectedProducts";
+
 /* Keep track of loaded products, selected products, and active modal state */
 let allProducts = [];
-let selectedProducts = [];
+let selectedProducts = loadSavedProducts();
 let activeModalProductId = null;
 let lastFocusedElement = null;
+let isSending = false;
+
+/* Store the full conversation history for OpenAI follow-up questions */
+const conversationMessages = [
+  {
+    role: "system",
+    content:
+      "You are a helpful L'Oréal skincare, haircare, makeup, and beauty advisor. Use the JSON product details provided by the user to build a clear, personalized, step-by-step routine (explaining the order and purpose of each product) and answer any follow-up questions accurately.",
+  },
+];
 
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
@@ -29,6 +46,46 @@ productsContainer.innerHTML = `
 
 /* Show initial empty state in the Selected Products section */
 renderSelectedProducts();
+
+/* Show a welcoming prompt inside the chat window */
+appendChatMessage(
+  "assistant",
+  'Select the products you want above and click "Generate Routine" to build your personalized routine.'
+);
+
+/* Load any previously saved products from localStorage */
+function loadSavedProducts() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return [];
+
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        typeof item.id === "number" &&
+        typeof item.name === "string" &&
+        typeof item.brand === "string" &&
+        typeof item.category === "string" &&
+        typeof item.description === "string"
+    );
+  } catch (error) {
+    console.warn("Could not load saved products:", error);
+    return [];
+  }
+}
+
+/* Save the current selectedProducts array to localStorage */
+function saveSelectedProducts() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedProducts));
+  } catch (error) {
+    console.warn("Could not save selected products:", error);
+  }
+}
 
 /* Load product data from JSON file */
 async function loadProducts() {
@@ -62,7 +119,8 @@ function toggleProductSelection(productId) {
     }
   }
 
-  /* Update the card highlight, Selected Products list, and modal button if open */
+  /* Save to localStorage and refresh UI */
+  saveSelectedProducts();
   updateProductCardStates();
   renderSelectedProducts();
 
@@ -89,36 +147,53 @@ function updateProductCardStates() {
 
 /* Render the list of selected products with a remove button for each item */
 function renderSelectedProducts() {
+  clearSelectedBtn.hidden = selectedProducts.length === 0;
+  selectedProductsList.replaceChildren();
+
   if (selectedProducts.length === 0) {
-    selectedProductsList.innerHTML = `
-      <p class="selected-empty">
-        No products selected yet. Click any product card above to add it to your routine.
-      </p>
-    `;
+    const emptyText = document.createElement("p");
+    emptyText.className = "selected-empty";
+    emptyText.textContent =
+      "No products selected yet. Click any product card above to add it to your routine.";
+    selectedProductsList.appendChild(emptyText);
     return;
   }
 
-  selectedProductsList.innerHTML = selectedProducts
-    .map(
-      (product) => `
-      <div class="selected-product-item" data-id="${product.id}">
-        <div class="selected-product-meta">
-          <span class="selected-product-name">${product.name}</span>
-          <span class="selected-product-brand">${product.brand}</span>
-        </div>
-        <button
-          type="button"
-          class="remove-product-btn"
-          data-id="${product.id}"
-          aria-label="Remove ${product.name}"
-          title="Remove ${product.name}"
-        >
-          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-        </button>
-      </div>
-    `
-    )
-    .join("");
+  selectedProducts.forEach((product) => {
+    const item = document.createElement("div");
+    item.className = "selected-product-item";
+    item.dataset.id = String(product.id);
+
+    const meta = document.createElement("div");
+    meta.className = "selected-product-meta";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "selected-product-name";
+    nameEl.textContent = product.name;
+
+    const brandEl = document.createElement("span");
+    brandEl.className = "selected-product-brand";
+    brandEl.textContent = product.brand;
+
+    meta.appendChild(nameEl);
+    meta.appendChild(brandEl);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "remove-product-btn";
+    removeBtn.dataset.id = String(product.id);
+    removeBtn.setAttribute("aria-label", `Remove ${product.name}`);
+    removeBtn.title = `Remove ${product.name}`;
+
+    const icon = document.createElement("i");
+    icon.className = "fa-solid fa-xmark";
+    icon.setAttribute("aria-hidden", "true");
+    removeBtn.appendChild(icon);
+
+    item.appendChild(meta);
+    item.appendChild(removeBtn);
+    selectedProductsList.appendChild(item);
+  });
 }
 
 /* Update the modal's Add / Remove button text and style */
@@ -252,11 +327,24 @@ selectedProductsList.addEventListener("click", (e) => {
   const productId = Number(removeBtn.dataset.id);
   selectedProducts = selectedProducts.filter((item) => item.id !== productId);
 
-  /* Refresh the Selected Products list, product grid, and modal CTA if open */
+  /* Save updated selections and refresh the list, grid, and modal CTA */
+  saveSelectedProducts();
   renderSelectedProducts();
   updateProductCardStates();
   if (activeModalProductId === productId) {
     updateModalSelectButton(productId);
+  }
+});
+
+/* Clear all selected products at once */
+clearSelectedBtn.addEventListener("click", () => {
+  selectedProducts = [];
+  saveSelectedProducts();
+  renderSelectedProducts();
+  updateProductCardStates();
+
+  if (activeModalProductId !== null) {
+    updateModalSelectButton(activeModalProductId);
   }
 });
 
@@ -313,9 +401,194 @@ categoryFilter.addEventListener("change", async (e) => {
   displayProducts(filteredProducts);
 });
 
-/* Chat form submission handler - placeholder for OpenAI integration */
-chatForm.addEventListener("submit", (e) => {
+/* Safely append text with **bold** inline segments using textContent (no raw HTML) */
+function appendFormattedInlineText(parent, text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+
+  parts.forEach((part) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      const strong = document.createElement("strong");
+      strong.textContent = part.slice(2, -2);
+      parent.appendChild(strong);
+    } else if (part) {
+      parent.appendChild(document.createTextNode(part));
+    }
+  });
+}
+
+/* Render plain or markdown-like text safely into a chat message element */
+function renderMessageContent(container, text) {
+  const lines = text.split("\n");
+  let activeList = null;
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      activeList = null;
+      return;
+    }
+
+    if (line.startsWith("### ") || line.startsWith("## ")) {
+      activeList = null;
+      const heading = document.createElement("h3");
+      heading.className = "chat-heading";
+      heading.textContent = line.replace(/^#{2,3}\s+/, "");
+      container.appendChild(heading);
+      return;
+    }
+
+    if (/^[-*]\s+/.test(line)) {
+      if (!activeList || activeList.tagName !== "UL") {
+        activeList = document.createElement("ul");
+        activeList.className = "chat-list";
+        container.appendChild(activeList);
+      }
+      const li = document.createElement("li");
+      appendFormattedInlineText(li, line.replace(/^[-*]\s+/, ""));
+      activeList.appendChild(li);
+      return;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      if (!activeList || activeList.tagName !== "OL") {
+        activeList = document.createElement("ol");
+        activeList.className = "chat-list";
+        container.appendChild(activeList);
+      }
+      const li = document.createElement("li");
+      appendFormattedInlineText(li, line.replace(/^\d+\.\s+/, ""));
+      activeList.appendChild(li);
+      return;
+    }
+
+    activeList = null;
+    const paragraph = document.createElement("p");
+    appendFormattedInlineText(paragraph, line);
+    container.appendChild(paragraph);
+  });
+}
+
+/* Add a styled chat bubble to the chat window */
+function appendChatMessage(sender, text, variant = "") {
+  const bubble = document.createElement("div");
+  bubble.className = `chat-message ${sender} ${variant}`.trim();
+
+  const label = document.createElement("span");
+  label.className = "chat-sender";
+  label.textContent = sender === "user" ? "You" : "L'Oréal Advisor";
+  bubble.appendChild(label);
+
+  const body = document.createElement("div");
+  body.className = "chat-text";
+  renderMessageContent(body, text);
+  bubble.appendChild(body);
+
+  chatWindow.appendChild(bubble);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+  return bubble;
+}
+
+/* Enable or disable request buttons while waiting for the API */
+function setLoadingState(loading) {
+  isSending = loading;
+  generateRoutineBtn.disabled = loading;
+  sendBtn.disabled = loading;
+}
+
+/* Send the conversation history to our backend OpenAI endpoint and display the reply */
+async function requestRoutineReply(displayText, apiUserContent, loadingText) {
+  if (isSending) return;
+
+  appendChatMessage("user", displayText);
+  const loadingBubble = appendChatMessage("assistant", loadingText, "is-loading");
+  setLoadingState(true);
+
+  const nextMessages = [
+    ...conversationMessages,
+    { role: "user", content: apiUserContent },
+  ];
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4.1",
+        messages: nextMessages,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || `Request failed with status ${response.status}.`
+      );
+    }
+
+    const reply = data?.choices?.[0]?.message?.content;
+    if (!reply) {
+      throw new Error("No routine response was returned.");
+    }
+
+    /* Save both the user message and AI reply so follow-up questions keep context */
+    conversationMessages.push({ role: "user", content: apiUserContent });
+    conversationMessages.push({ role: "assistant", content: reply });
+
+    loadingBubble.remove();
+    appendChatMessage("assistant", reply);
+  } catch (error) {
+    loadingBubble.remove();
+    appendChatMessage("assistant", error.message, "is-error");
+  } finally {
+    setLoadingState(false);
+  }
+}
+
+/* Generate Routine button handler: collect selected products and call OpenAI */
+generateRoutineBtn.addEventListener("click", async () => {
+  if (selectedProducts.length === 0) {
+    appendChatMessage(
+      "assistant",
+      "Please select at least one product from the grid above before generating a routine.",
+      "is-notice"
+    );
+    chatWindow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return;
+  }
+
+  /* Collect only the selected products and their key JSON details */
+  const selectedProductsData = selectedProducts.map((product) => ({
+    name: product.name,
+    brand: product.brand,
+    category: product.category,
+    description: product.description,
+  }));
+
+  const selectedNames = selectedProductsData.map((item) => item.name).join(", ");
+  const displayPrompt = `Generate a routine using my selected products: ${selectedNames}`;
+  const apiPrompt = `Build a personalized step-by-step routine using only these selected L'Oréal products (provided as JSON):\n\n${JSON.stringify(
+    selectedProductsData,
+    null,
+    2
+  )}`;
+
+  chatWindow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  await requestRoutineReply(
+    displayPrompt,
+    apiPrompt,
+    "Creating your personalized L'Oréal routine…"
+  );
+});
+
+/* Chat form submission handler for follow-up questions */
+chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  chatWindow.innerHTML = "Connect to the OpenAI API for a response!";
+  const question = userInput.value.trim();
+  if (!question || isSending) return;
+
+  userInput.value = "";
+  await requestRoutineReply(question, question, "Thinking…");
 });
