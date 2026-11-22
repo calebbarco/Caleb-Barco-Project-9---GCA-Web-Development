@@ -1,5 +1,8 @@
 /* Get references to DOM elements */
+const dirToggleBtn = document.getElementById("dirToggleBtn");
+const dirToggleLabel = document.getElementById("dirToggleLabel");
 const categoryFilter = document.getElementById("categoryFilter");
+const productSearch = document.getElementById("productSearch");
 const productsContainer = document.getElementById("productsContainer");
 const selectedProductsList = document.getElementById("selectedProductsList");
 const clearSelectedBtn = document.getElementById("clearSelectedBtn");
@@ -18,15 +21,221 @@ const modalProductName = document.getElementById("modalProductName");
 const modalProductDescription = document.getElementById("modalProductDescription");
 const modalSelectBtn = document.getElementById("modalSelectBtn");
 
-/* Key used to save selected products in localStorage */
+/* Keys used to save selected products and manual RTL preference in localStorage */
 const STORAGE_KEY = "lorealSelectedProducts";
+const DIR_STORAGE_KEY = "lorealTextDirection";
 
-/* Keep track of loaded products, selected products, and active modal state */
+/* Known RTL ISO 639 language codes and RTL script subtags */
+const RTL_LANG_CODES = new Set([
+  "ar", "arc", "azb", "bcc", "bgn", "bqi", "ckb", "dv", "fa",
+  "glk", "he", "iw", "ji", "khw", "ks", "ku", "lrc", "mzn",
+  "nqo", "pnb", "ps", "sd", "sdh", "syr", "ug", "ur", "yi",
+]);
+const RTL_SCRIPT_SUBTAGS = new Set([
+  "arab", "hebr", "syrc", "thaa", "nkoo", "adlm", "mend", "rohg", "yezi",
+]);
+const LTR_SCRIPT_SUBTAGS = new Set(["latn", "cyrl"]);
+const RTL_CHAR_PATTERN =
+  /[\u0591-\u07FF\u200F\u202B\u202E\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+
+/* Keep track of loaded products, selected products, and UI state */
 let allProducts = [];
 let selectedProducts = loadSavedProducts();
 let activeModalProductId = null;
 let lastFocusedElement = null;
 let isSending = false;
+let manualDirectionOverride = false;
+let autoEngagedRtl = false;
+
+/* Check whether a BCP-47 language tag (e.g. "ar-SA", "he", "ku-Arab") uses RTL */
+function isRtlLanguageTag(langTag) {
+  if (typeof langTag !== "string" || !langTag.trim()) return false;
+
+  const normalized = langTag.trim().toLowerCase().replace(/_/g, "-");
+  const subtags = normalized.split("-").filter(Boolean);
+  const primaryLang = subtags[0];
+
+  /* Respect explicit LTR script subtags such as ku-Latn or az-Cyrl */
+  if (subtags.some((tag) => LTR_SCRIPT_SUBTAGS.has(tag))) {
+    return false;
+  }
+
+  /* Match explicit RTL script subtags such as pa-Arab or uz-Arab */
+  if (subtags.some((tag) => RTL_SCRIPT_SUBTAGS.has(tag))) {
+    return true;
+  }
+
+  /* Use the standard Intl.Locale textInfo API when available */
+  if (typeof Intl !== "undefined" && typeof Intl.Locale === "function") {
+    try {
+      const locale = new Intl.Locale(normalized);
+      const textInfo =
+        typeof locale.getTextInfo === "function"
+          ? locale.getTextInfo()
+          : locale.textInfo;
+      if (textInfo && textInfo.direction) {
+        return textInfo.direction === "rtl";
+      }
+    } catch {
+      /* Fall back to language code lookup for non-standard tags */
+    }
+  }
+
+  return RTL_LANG_CODES.has(primaryLang);
+}
+
+/* Check whether a string contains any RTL script characters */
+function containsRtlCharacters(text) {
+  return typeof text === "string" && RTL_CHAR_PATTERN.test(text);
+}
+
+/* Detect whether the user is currently using an RTL language */
+function detectUserRtlLanguage() {
+  const htmlEl = document.documentElement;
+
+  /* 1. Google Translate or explicit RTL document class / lang attribute */
+  if (htmlEl.classList.contains("translated-rtl")) {
+    return true;
+  }
+  if (isRtlLanguageTag(htmlEl.lang)) {
+    return true;
+  }
+
+  /* 2. Active browser / OS language preferences */
+  const candidateLocales = [];
+  if (typeof navigator !== "undefined") {
+    if (navigator.language) candidateLocales.push(navigator.language);
+    if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+      candidateLocales.push(navigator.languages[0]);
+    }
+    if (navigator.userLanguage) candidateLocales.push(navigator.userLanguage);
+  }
+  if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") {
+    try {
+      const resolved = Intl.DateTimeFormat().resolvedOptions().locale;
+      if (resolved) candidateLocales.push(resolved);
+    } catch {
+      /* Ignore environments where resolvedOptions throws */
+    }
+  }
+
+  return candidateLocales.some((locale) => isRtlLanguageTag(locale));
+}
+
+/* Apply "ltr" or "rtl" direction to the document and update the toggle button */
+function applyDirection(direction) {
+  const normalizedDir = direction === "rtl" ? "rtl" : "ltr";
+  const isRtl = normalizedDir === "rtl";
+
+  document.documentElement.dir = normalizedDir;
+
+  if (dirToggleBtn) {
+    dirToggleBtn.setAttribute("aria-pressed", String(isRtl));
+    dirToggleBtn.setAttribute(
+      "aria-label",
+      isRtl
+        ? "Switch layout to left-to-right (LTR)"
+        : "Switch layout to right-to-left (RTL)"
+    );
+  }
+
+  if (dirToggleLabel) {
+    dirToggleLabel.textContent = isRtl ? "LTR Mode" : "RTL Mode";
+  }
+}
+
+/* Automatically engage RTL when an RTL language is detected */
+function syncAutomaticDirection(allowRevertToLtr = false) {
+  if (manualDirectionOverride) return;
+
+  if (detectUserRtlLanguage()) {
+    autoEngagedRtl = true;
+    applyDirection("rtl");
+    return;
+  }
+
+  if (allowRevertToLtr && autoEngagedRtl) {
+    autoEngagedRtl = false;
+    applyDirection("ltr");
+  }
+}
+
+/* Initialize layout direction: automatic RTL detection first, then manual preference */
+function initializeDirection() {
+  const initialHtmlDir = document.documentElement.getAttribute("dir");
+
+  if (detectUserRtlLanguage() || initialHtmlDir === "rtl") {
+    autoEngagedRtl = true;
+    applyDirection("rtl");
+    return;
+  }
+
+  let savedDir = null;
+  try {
+    savedDir = localStorage.getItem(DIR_STORAGE_KEY);
+  } catch (error) {
+    console.warn("Could not load text direction:", error);
+  }
+
+  applyDirection(savedDir === "rtl" ? "rtl" : "ltr");
+}
+
+initializeDirection();
+
+/* Keep the manual RTL/LTR toggle button working while preserving automatic detection */
+if (dirToggleBtn) {
+  dirToggleBtn.addEventListener("click", () => {
+    const nextDir = document.documentElement.dir === "rtl" ? "ltr" : "rtl";
+    manualDirectionOverride = true;
+    autoEngagedRtl = false;
+    applyDirection(nextDir);
+
+    try {
+      if (nextDir === "rtl") {
+        localStorage.setItem(DIR_STORAGE_KEY, "rtl");
+      } else {
+        localStorage.removeItem(DIR_STORAGE_KEY);
+      }
+    } catch (error) {
+      console.warn("Could not update saved text direction:", error);
+    }
+  });
+}
+
+/* Re-check if the browser/OS language changes dynamically */
+window.addEventListener("languagechange", () => {
+  manualDirectionOverride = false;
+  syncAutomaticDirection(true);
+});
+
+/* Automatically engage RTL if <html lang> or browser translation updates the page */
+if (typeof MutationObserver === "function") {
+  const htmlLangObserver = new MutationObserver(() => {
+    manualDirectionOverride = false;
+    syncAutomaticDirection(true);
+  });
+
+  htmlLangObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["lang", "class"],
+  });
+}
+
+/* Engage RTL automatically if the user types right-to-left text in search or chat */
+function handleRtlTextInput(event) {
+  if (manualDirectionOverride) return;
+  if (containsRtlCharacters(event.target.value)) {
+    autoEngagedRtl = true;
+    applyDirection("rtl");
+  }
+}
+
+if (productSearch) {
+  productSearch.addEventListener("input", handleRtlTextInput);
+}
+if (userInput) {
+  userInput.addEventListener("input", handleRtlTextInput);
+}
 
 /* Store the full conversation history for OpenAI follow-up questions */
 const conversationMessages = [
@@ -37,10 +246,10 @@ const conversationMessages = [
   },
 ];
 
-/* Show initial placeholder until user selects a category */
+/* Show initial placeholder until user selects a category or searches */
 productsContainer.innerHTML = `
   <div class="placeholder-message">
-    Select a category to view products
+    Select a category or enter a keyword to view products
   </div>
 `;
 
@@ -218,6 +427,7 @@ function openProductModal(productId) {
   modalProductImage.alt = product.name;
   modalProductMeta.textContent = `${product.brand} · ${product.category}`;
   modalProductName.textContent = product.name;
+  modalProductDescription.dir = "auto";
   modalProductDescription.textContent = product.description;
 
   updateModalSelectButton(productId);
@@ -387,19 +597,54 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* Filter and display products when category changes */
-categoryFilter.addEventListener("change", async (e) => {
-  const products = await loadProducts();
-  const selectedCategory = e.target.value;
+/* Filter products by both the active category and search keyword */
+async function filterAndDisplayProducts() {
+  const selectedCategory = categoryFilter.value;
+  const searchQuery = productSearch.value.trim().toLowerCase();
 
-  /* filter() creates a new array containing only products 
-     where the category matches what the user selected */
-  const filteredProducts = products.filter(
-    (product) => product.category === selectedCategory
-  );
+  /* Show initial prompt if neither a category nor a search term is active */
+  if (!selectedCategory && !searchQuery) {
+    productsContainer.innerHTML = `
+      <div class="placeholder-message">
+        Select a category or enter a keyword to view products
+      </div>
+    `;
+    return;
+  }
+
+  const products = await loadProducts();
+
+  const filteredProducts = products.filter((product) => {
+    const matchesCategory =
+      !selectedCategory ||
+      selectedCategory === "all" ||
+      product.category === selectedCategory;
+
+    const matchesKeyword =
+      !searchQuery ||
+      product.name.toLowerCase().includes(searchQuery) ||
+      product.brand.toLowerCase().includes(searchQuery) ||
+      product.category.toLowerCase().includes(searchQuery) ||
+      product.description.toLowerCase().includes(searchQuery);
+
+    return matchesCategory && matchesKeyword;
+  });
+
+  if (filteredProducts.length === 0) {
+    productsContainer.innerHTML = `
+      <div class="placeholder-message">
+        No matching products found. Try another keyword or category.
+      </div>
+    `;
+    return;
+  }
 
   displayProducts(filteredProducts);
-});
+}
+
+/* Re-filter products when category changes or user types in the search field */
+categoryFilter.addEventListener("change", filterAndDisplayProducts);
+productSearch.addEventListener("input", filterAndDisplayProducts);
 
 /* Validate that a URL uses http: or https: before turning it into a link */
 function getSafeHttpUrl(rawUrl) {
@@ -534,6 +779,7 @@ function renderMessageContent(container, text) {
       activeList = null;
       const heading = document.createElement("h3");
       heading.className = "chat-heading";
+      heading.dir = "auto";
       heading.textContent = line.replace(/^#{2,3}\s+/, "");
       container.appendChild(heading);
       return;
@@ -546,7 +792,11 @@ function renderMessageContent(container, text) {
         container.appendChild(activeList);
       }
       const li = document.createElement("li");
-      appendFormattedInlineText(li, line.replace(/^[-*]\s+/, ""));
+      const liSpan = document.createElement("span");
+      liSpan.className = "chat-list-text";
+      liSpan.dir = "auto";
+      appendFormattedInlineText(liSpan, line.replace(/^[-*]\s+/, ""));
+      li.appendChild(liSpan);
       activeList.appendChild(li);
       return;
     }
@@ -558,13 +808,18 @@ function renderMessageContent(container, text) {
         container.appendChild(activeList);
       }
       const li = document.createElement("li");
-      appendFormattedInlineText(li, line.replace(/^\d+\.\s+/, ""));
+      const liSpan = document.createElement("span");
+      liSpan.className = "chat-list-text";
+      liSpan.dir = "auto";
+      appendFormattedInlineText(liSpan, line.replace(/^\d+\.\s+/, ""));
+      li.appendChild(liSpan);
       activeList.appendChild(li);
       return;
     }
 
     activeList = null;
     const paragraph = document.createElement("p");
+    paragraph.dir = "auto";
     appendFormattedInlineText(paragraph, line);
     container.appendChild(paragraph);
   });
@@ -572,6 +827,11 @@ function renderMessageContent(container, text) {
 
 /* Add a styled chat bubble (and optional web search citations) to the chat window */
 function appendChatMessage(sender, text, variant = "", citations = []) {
+  if (!manualDirectionOverride && containsRtlCharacters(text)) {
+    autoEngagedRtl = true;
+    applyDirection("rtl");
+  }
+
   const bubble = document.createElement("div");
   bubble.className = `chat-message ${sender} ${variant}`.trim();
 
